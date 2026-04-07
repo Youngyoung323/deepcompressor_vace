@@ -95,9 +95,9 @@ quant:
       max_expand: 1.0
       num_grids: 80
       skips: []
-  enable_smooth: false
+  enable_smooth: true
   smooth:
-    enable_proj: false
+    enable_proj: true
     proj:
       degree: 2
       objective: OutputsError

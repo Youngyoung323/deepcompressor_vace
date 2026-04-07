@@ -1,0 +1,65 @@
+pipeline:
+  name: wan2.1-vace-14b
+  dtype: torch.bfloat16
+  path: /data1/lyf/Lab/DiffSynth-Studio/models
+eval:
+  num_steps: 20
+  guidance_scale: 5.0
+  protocol: fmeuler{num_steps}-g{guidance_scale}
+  height: 480
+  width: 832
+  num_samples: -1
+  benchmarks: []
+  num_gpus: 1
+  batch_size_per_gpu: 1
+quant:
+  calib:
+    data: vace-benchmark
+    path: datasets/{dtype}/Wan2.1-VACE-14B-lora-20steps/VACE-benchmark-real/s120/caches
+    #path: datasets/{dtype}/test
+    batch_size: 1
+    num_workers: 1
+    num_samples: 100
+  wgts:
+    calib_range:
+      element_batch_size: 64
+      sample_batch_size: 1
+      element_size: 512
+      sample_size: -1
+    low_rank:
+      sample_batch_size: 1
+      sample_size: -1
+    # 与 pixart/sana 对齐：embed=四类嵌入；transformer_*=DiTBlock 内 norm；attn_add=cross 的 k/v；ffn_add 无模块时无害
+    skips:
+    - embed
+    - transformer_norm
+    - transformer_add_norm
+    - attn_add
+    - ffn_add
+  ipts:
+    calib_range:
+      element_batch_size: 64
+      sample_batch_size: 1
+      element_size: 512
+      sample_size: -1
+    skips:
+    - embed
+    - transformer_norm
+    - transformer_add_norm
+    - attn_add
+    - ffn_add
+  opts:
+    calib_range:
+      element_batch_size: 64
+      sample_batch_size: 1
+      element_size: 512
+      sample_size: -1
+  smooth:
+    proj:
+      element_batch_size: -1
+      sample_batch_size: 1
+      element_size: -1
+      sample_size: -1
+    attn:
+      sample_batch_size: 1
+      sample_size: -1

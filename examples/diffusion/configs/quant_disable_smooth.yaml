@@ -1,0 +1,10 @@
+# 关闭 SmoothQuant：使用 omniconfig 为可选字段 ``smooth`` 自动生成的 ``quant.enable_smooth``。
+# 勿写 ``smooth.proj: null`` 等（合并时可能触发 omniconfig 报错）。
+#
+# 若与 configs/svdquant/__default__.yaml 合并，后者含 ``enable_smooth: true``；本文件放在后面可覆盖为 false。
+#
+# 用法示例：
+#   python -m deepcompressor.app.diffusion.ptq_vace \
+#     configs/model/wan2.1-vace-14b.yaml configs/svdquant/nvfp4.yaml configs/quant_disable_smooth.yaml
+quant:
+  enable_smooth: false

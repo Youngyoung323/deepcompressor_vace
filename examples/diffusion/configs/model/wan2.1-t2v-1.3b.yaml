@@ -1,59 +1,63 @@
 pipeline:
-  name: flux.1-dev
+  name: wan2.1-t2v-1.3b
   dtype: torch.bfloat16
+  path: /data1/lyf/Lab/DiffSynth-Studio/models
 eval:
   num_steps: 50
-  guidance_scale: 3.5
+  guidance_scale: 5.0
   protocol: fmeuler{num_steps}-g{guidance_scale}
+  height: 480
+  width: 832
+  num_samples: 128
+  benchmarks: []
+  num_gpus: 1
+  batch_size_per_gpu: 1
 quant:
   calib:
-    batch_size: 16
-    num_samples: 1
+    data: Ditto-1M
+    path: datasets/{dtype}/Wan2.1-T2V-1.3B-50steps/Ditto-1M/s128/caches
+    batch_size: 1
+    num_workers: 1
+    num_samples: 128
   wgts:
     calib_range:
       element_batch_size: 64
-      sample_batch_size: 16
+      sample_batch_size: 1
       element_size: 512
       sample_size: -1
     low_rank:
-      sample_batch_size: 16
+      sample_batch_size: 1
       sample_size: -1
-    skips: 
+    skips:
     - embed
-    - resblock_shortcut
-    - resblock_time_proj
-    - transformer_proj_in
-    - transformer_proj_out
-    - down_sample
-    - up_sample
+    - transformer_norm
+    - transformer_add_norm
+    - attn_add
+    - ffn_add
   ipts:
     calib_range:
       element_batch_size: 64
-      sample_batch_size: 16
+      sample_batch_size: 1
       element_size: 512
       sample_size: -1
-    skips: 
+    skips:
     - embed
-    - resblock_shortcut
-    - resblock_time_proj
-    - transformer_proj_in
-    - transformer_proj_out
     - transformer_norm
     - transformer_add_norm
-    - down_sample
-    - up_sample
+    - attn_add
+    - ffn_add
   opts:
     calib_range:
       element_batch_size: 64
-      sample_batch_size: 16
+      sample_batch_size: 1
       element_size: 512
       sample_size: -1
   smooth:
     proj:
       element_batch_size: -1
-      sample_batch_size: 16
+      sample_batch_size: 1
       element_size: -1
       sample_size: -1
     attn:
-      sample_batch_size: 16
+      sample_batch_size: 1
       sample_size: -1

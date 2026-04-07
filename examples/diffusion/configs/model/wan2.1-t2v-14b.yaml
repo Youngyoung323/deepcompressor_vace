@@ -1,0 +1,64 @@
+pipeline:
+  # 与 ptq_wan_t2v 中 register_pipeline_factory("wan2.1-t2v-14b", ...) 一致
+  name: wan2.1-t2v-14b
+  dtype: torch.bfloat16
+  path: /data1/lyf/Lab/DiffSynth-Studio/models
+eval:
+  num_steps: 20
+  guidance_scale: 5.0
+  protocol: fmeuler{num_steps}-g{guidance_scale}
+  height: 480
+  width: 832
+  num_samples: 128
+  benchmarks: []
+  num_gpus: 1
+  batch_size_per_gpu: 1
+quant:
+  calib:
+    data: Ditto-1M
+    path: datasets/{dtype}/Wan2.1-T2V-14B-20steps/Ditto-1M/s128/caches
+    batch_size: 1
+    num_workers: 1
+    num_samples: 100
+  wgts:
+    calib_range:
+      element_batch_size: 64
+      sample_batch_size: 1
+      element_size: 512
+      sample_size: -1
+    low_rank:
+      sample_batch_size: 1
+      sample_size: -1
+    skips:
+    - embed
+    - transformer_norm
+    - transformer_add_norm
+    - attn_add
+    - ffn_add
+  ipts:
+    calib_range:
+      element_batch_size: 64
+      sample_batch_size: 1
+      element_size: 512
+      sample_size: -1
+    skips:
+    - embed
+    - transformer_norm
+    - transformer_add_norm
+    - attn_add
+    - ffn_add
+  opts:
+    calib_range:
+      element_batch_size: 64
+      sample_batch_size: 1
+      element_size: 512
+      sample_size: -1
+  smooth:
+    proj:
+      element_batch_size: -1
+      sample_batch_size: 1
+      element_size: -1
+      sample_size: -1
+    attn:
+      sample_batch_size: 1
+      sample_size: -1

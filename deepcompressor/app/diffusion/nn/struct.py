@@ -260,6 +260,15 @@ class DiffusionModelStruct(DiffusionBlockStruct):
             module = module.unet
         elif isinstance(module, DIT_PIPELINE_CLS):
             module = module.transformer
+        try:
+            from diffsynth.models.wan_video_dit import WanModel
+            if isinstance(module, WanModel):
+                from .wan_struct import WanDiTStruct
+                return WanDiTStruct.construct(
+                    module, parent=parent, fname=fname, rname=rname, rkey=rkey, idx=idx, **kwargs
+                )
+        except ImportError:
+            pass
         if isinstance(module, UNET_CLS):
             return UNetStruct.construct(module, parent=parent, fname=fname, rname=rname, rkey=rkey, idx=idx, **kwargs)
         elif isinstance(module, DIT_CLS):
@@ -278,6 +287,13 @@ class DiffusionModelStruct(DiffusionBlockStruct):
             key_map[rkey].update(keys)
         for rkey, keys in flux_key_map.items():
             key_map[rkey].update(keys)
+        try:
+            from .wan_struct import WanDiTStruct
+            wan_key_map = WanDiTStruct._get_default_key_map()
+            for rkey, keys in wan_key_map.items():
+                key_map[rkey].update(keys)
+        except ImportError:
+            pass
         return {k: v for k, v in key_map.items() if v}
 
     @staticmethod

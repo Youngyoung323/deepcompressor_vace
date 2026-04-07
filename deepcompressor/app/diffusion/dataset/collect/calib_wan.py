@@ -180,11 +180,13 @@ if __name__ == "__main__":
         tokenizer_config=tokenizer_config,
     )
 
+    pipeline.load_lora(pipeline.dit, "/data1/lyf/Lab/DiffSynth-Studio/lora/wan2.1_t2v_14b_lora_rank64_lightx2v_4step.safetensors", alpha=1)
+
     index_path = "/data1/lyf/video_data/json/real_fix.txt"
     process_data_root = "/data1/lyf/video_data/process_data"
     num_samples = 120  
 
-    num_steps = 50               
+    num_steps = 20               
     height = 480                 
     width = 832                  
     num_frames = 81              
@@ -195,7 +197,7 @@ if __name__ == "__main__":
 
     output_root = "/data1/lyf/Lab/VACE/deepcompressor_vace/examples/diffusion/datasets"
     dataset_name = "VACE-benchmark-real"
-    pipeline_name = "Wan2.1-VACE-14B"
+    pipeline_name = "Wan2.1-VACE-14B-lora-20steps"
 
     collect_dirpath = os.path.join(
         output_root,

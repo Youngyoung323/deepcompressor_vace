@@ -1,0 +1,19 @@
+# RTN + FP4 基线（与 configs/svdquant/nvfp4.yaml 相同的 FP4 精度设定）
+#
+# 在 nvfp4 之上关闭：
+#   - SmoothQuant（quant.enable_smooth）
+#   - SVD 低秩分支（quant.wgts.enable_low_rank）
+#   - GPTQ 权重量化核（quant.wgts.enable_kernel_gptq）
+# 权重量化走默认 RTN（QuantRtnKernel），便于与 SVDQuant 流程对照。
+#
+# 用法：本文件放在 nvfp4 与 svdquant 默认之后，例如：
+#   python -m deepcompressor.app.diffusion.ptq_vace \
+#     configs/model/wan2.1-vace-14b.yaml \
+#     configs/svdquant/__default__.yaml \
+#     configs/svdquant/nvfp4.yaml \
+#     configs/rtn_fp4.yaml
+quant:
+  enable_smooth: false
+  wgts:
+    enable_low_rank: false
+    enable_kernel_gptq: false
