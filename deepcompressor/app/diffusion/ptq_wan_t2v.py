@@ -160,7 +160,7 @@ def _build_wan_t2v_14b_pipeline(
         model_configs=model_configs,
         tokenizer_config=tokenizer_config,
     )
-    pipeline.load_lora(pipeline.dit, "/data1/lyf/Lab/DiffSynth-Studio/lora/wan2.1_t2v_14b_lora_rank64_lightx2v_4step.safetensors", alpha=1)
+    
     return pipeline
 
 
@@ -362,6 +362,8 @@ def main_t2v(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.D
 
         logger.info(f"=== Generating T2V videos -> {gen_root} ===")
         tools.logging.Formatter.indent_inc()
+        if config.pipeline.name == "wan2.1-t2v-14b":
+            pipeline.load_lora(pipeline.dit, "/data1/lyf/Lab/DiffSynth-Studio/lora/wan2.1_t2v_14b_lora_rank64_lightx2v_4step.safetensors", alpha=1)
         generate_t2v(
             pipeline,
             output_dir=gen_root,
