@@ -15,7 +15,7 @@ eval:
 quant:
   calib:
     data: Ditto-1M
-    path: datasets/torch.bfloat16/test/caches
+    path: datasets/torch.bfloat16/test
     batch_size: 1
     num_workers: 1
     num_samples: 80
