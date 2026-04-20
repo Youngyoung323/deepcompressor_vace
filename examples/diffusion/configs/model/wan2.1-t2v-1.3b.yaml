@@ -8,17 +8,17 @@ eval:
   protocol: fmeuler{num_steps}-g{guidance_scale}
   height: 480
   width: 832
-  num_samples: 128
+  num_samples: 1
   benchmarks: []
   num_gpus: 1
   batch_size_per_gpu: 1
 quant:
   calib:
     data: Ditto-1M
-    path: datasets/{dtype}/Wan2.1-T2V-1.3B-50steps/Ditto-1M/s128/caches
+    path: datasets/torch.bfloat16/test/caches
     batch_size: 1
     num_workers: 1
-    num_samples: 128
+    num_samples: 80
   wgts:
     calib_range:
       element_batch_size: 64
@@ -61,3 +61,10 @@ quant:
     attn:
       sample_batch_size: 1
       sample_size: -1
+    quant:
+  enable_rotation: true
+  rotation:
+    random: false
+    transforms:
+      - attn_out_proj
+      - ffn_down_proj
