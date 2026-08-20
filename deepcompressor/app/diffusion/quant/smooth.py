@@ -52,6 +52,44 @@ def smooth_diffusion_qkv_proj(
 ) -> dict[str, torch.Tensor]:
     logger = tools.logging.getLogger(f"{__name__}.SmoothQuant")
     # region qkv projection
+    if attn.is_self_attn():
+        prevs = None
+        if config.smooth.proj.fuse_when_possible and attn.parent.norm_type.startswith("layer_norm"):
+            if not hasattr(attn.parent.module, "pos_embed") or attn.parent.module.pos_embed is None:
+                prevs = attn.parent.pre_attn_norms[attn.idx]
+                assert isinstance(prevs, nn.LayerNorm)
+        for module_key, module, module_name in (
+            (attn.q_key, attn.q_proj, attn.q_proj_name),
+            (attn.k_key, attn.k_proj, attn.k_proj_name),
+            (attn.v_key, attn.v_proj, attn.v_proj_name),
+        ):
+            needs_quant = config.enabled_wgts and config.wgts.is_enabled_for(module_key)
+            needs_quant = needs_quant or (config.enabled_ipts and config.ipts.is_enabled_for(module_key))
+            if not (needs_quant and config.smooth.enabled_proj and config.smooth.proj.is_enabled_for(module_key)):
+                continue
+            logger.debug("- %s.%s", attn.name, module_name.rsplit(".", 1)[-1])
+            config_wgts = config.wgts
+            if config.enabled_extra_wgts and config.extra_wgts.is_enabled_for(module_key):
+                config_wgts = config.extra_wgts
+            cache_key = module_name
+            smooth_cache[cache_key] = smooth_linear_modules(
+                prevs,
+                [module],
+                scale=smooth_cache.get(cache_key, None),
+                config=config.smooth.proj,
+                weight_quantizer=Quantizer(config_wgts, key=module_key, low_rank=config.wgts.low_rank),
+                input_quantizer=Quantizer(config.ipts, channels_dim=-1, key=module_key),
+                inputs=block_cache[module_name].inputs if block_cache else None,
+                eval_inputs=block_cache[attn.name].inputs if block_cache else None,
+                eval_module=attn,
+                eval_kwargs=attn.filter_kwargs(block_kwargs),
+                develop_dtype=config.develop_dtype,
+            )
+            if prevs is None:
+                ActivationSmoother(smooth_cache[cache_key], channels_dim=-1).as_hook().register(module)
+            module.in_smooth_cache_key = cache_key
+        return smooth_cache
+
     module_key = attn.qkv_proj_key
     needs_quant = config.enabled_wgts and config.wgts.is_enabled_for(module_key)
     needs_quant = needs_quant or (config.enabled_ipts and config.ipts.is_enabled_for(module_key))
@@ -287,7 +325,7 @@ def smooth_diffusion_down_proj(
 ) -> dict[str, torch.Tensor]:
     logger = tools.logging.getLogger(f"{__name__}.SmoothQuant")
     # ffn down projection
-    module_key = ffn.down_proj_key.upper()
+    module_key = ffn.down_proj_key
     needs_quant = config.enabled_wgts and config.wgts.is_enabled_for(module_key)
     needs_quant = needs_quant or (config.enabled_ipts and config.ipts.is_enabled_for(module_key))
     if needs_quant and config.smooth.enabled_proj and config.smooth.proj.is_enabled_for(module_key):
@@ -328,6 +366,32 @@ def smooth_diffusion_parallel_qkv_up_proj(
     logger = tools.logging.getLogger(f"{__name__}.SmoothQuant")
     # region qkv proj + up proj
     attn, ffn = block.attn_structs[0], block.ffn_struct
+    if attn.is_self_attn():
+        # Do not fuse self-attention q/k/v with each other (or with the FFN):
+        # their independent keys must remain independently configurable.
+        smooth_cache = smooth_diffusion_qkv_proj(
+            attn=attn,
+            config=config,
+            smooth_cache=smooth_cache,
+            block_cache=block_cache,
+            block_kwargs=block_kwargs,
+        )
+        smooth_cache = smooth_diffusion_up_proj(
+            pre_ffn_norm=block.pre_ffn_norm,
+            ffn=ffn,
+            config=config,
+            smooth_cache=smooth_cache,
+            block_cache=block_cache,
+        )
+        if block.add_ffn_struct is not None:
+            smooth_cache = smooth_diffusion_up_proj(
+                pre_ffn_norm=block.pre_add_ffn_norm,
+                ffn=block.add_ffn_struct,
+                config=config,
+                smooth_cache=smooth_cache,
+                block_cache=block_cache,
+            )
+        return smooth_cache
     module_key = attn.qkv_proj_key
     needs_quant = config.enabled_wgts and config.wgts.is_enabled_for(module_key)
     needs_quant = needs_quant or (config.enabled_ipts and config.ipts.is_enabled_for(module_key))

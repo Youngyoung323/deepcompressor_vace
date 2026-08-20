@@ -77,9 +77,10 @@ def quantize_diffusion_block_activations(  # noqa: C901
     used_modules: set[nn.Module] = set()
     for module_key, module_name, module, parent, field_name in layer.named_key_modules():
         modules, orig_struct_wgts = None, {}
-        if field_name in ("k_proj", "v_proj", "add_q_proj", "add_v_proj"):
+        is_self_attention_proj = isinstance(parent, DiffusionAttentionStruct) and parent.is_self_attn()
+        if field_name in ("k_proj", "v_proj", "add_q_proj", "add_v_proj") and not is_self_attention_proj:
             continue
-        if field_name in ("q_proj", "add_k_proj", "up_proj"):
+        if field_name in ("q_proj", "add_k_proj", "up_proj") and not is_self_attention_proj:
             grandparent = parent.parent
             assert isinstance(grandparent, DiffusionTransformerBlockStruct)
             if grandparent.parallel and parent.idx == 0:

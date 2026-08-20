@@ -1,0 +1,23 @@
+# 禁用 SmoothQuant，启用全量 Hadamard Rotation 替代。
+#
+# Rotation 是确定性正交变换，不需要校准数据搜索，几乎零额外开销。
+# transforms 列表覆盖所有投影层组：
+#   - attn_qkv_proj:     self_attn [q,k,v] + cross_attn [q] 输入 Hadamard
+#   - attn_add_qkv_proj: cross_attn context [k,v] 输入 Hadamard
+#   - attn_out_proj:     V→O 逐头旋转矩阵
+#   - ffn_up_proj:       FFN up (ffn.0) 输入 Hadamard
+#   - ffn_down_proj:     FFN down (ffn.2) 输入 Hadamard
+#
+# 用法示例：
+#   python -m deepcompressor.app.diffusion.ptq_vace \
+#     configs/model/wan2.1-vace-14b.yaml configs/svdquant/nvfp4.yaml configs/quant_rotation_only.yaml
+quant:
+  enable_rotation: true
+  enable_smooth: false
+  rotation:
+    random: false
+    transforms:
+      - attn_qkv_proj
+      - attn_out_proj
+      - ffn_up_proj
+      - ffn_down_proj

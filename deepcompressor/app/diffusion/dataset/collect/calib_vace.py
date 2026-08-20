@@ -1,19 +1,10 @@
 # -*- coding: utf-8 -*-
 """Collect calibration dataset for Wan Video (VACE) model.
 
-Pipeline is created via WanVideoPipeline.from_pretrained(); the model variant
-(1.3B / 14B) is selected from ``pipeline.name`` in a YAML config file.
-
-Usage::
-
-    python -m deepcompressor.app.diffusion.dataset.collect.calib_wan \\
-        --config examples/diffusion/configs/model/wan2.1-vace-14b.yaml
-
-    python -m deepcompressor.app.diffusion.dataset.collect.calib_wan \\
-        --config examples/diffusion/configs/model/wan2.1-vace-1.3b.yaml
+Pipeline is created explicitly via WanVideoPipeline.from_pretrained()
+Dataset is loaded from VACE-Benchmark real.txt
 """
 
-import argparse
 import glob
 import json
 import os
@@ -21,7 +12,6 @@ import sys
 sys.path.insert(0, "/data1/lyf/Lab/VACE/deepcompressor_vace")
 
 import torch
-import yaml
 from PIL import Image
 from tqdm import tqdm
 
@@ -31,14 +21,6 @@ from diffsynth.utils.data import save_video, VideoData
 from deepcompressor.utils.common import hash_str_to_int, tree_map
 
 from deepcompressor.app.diffusion.dataset.collect.utils import ModelFnCollectHook
-
-
-DEFAULT_NEGATIVE_PROMPT = (
-    "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，"
-    "整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，"
-    "画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，"
-    "静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
-)
 
 
 def process(x: torch.Tensor) -> torch.Tensor:
@@ -166,136 +148,68 @@ def collect(
         caches.clear()
 
 
-def _load_yaml_config(config_path: str) -> dict:
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
-def _parse_dtype(dtype: str) -> torch.dtype:
-    if isinstance(dtype, torch.dtype):
-        return dtype
-    if dtype.startswith("torch."):
-        dtype = dtype.removeprefix("torch.")
-    mapping = {
-        "float32": torch.float32,
-        "float16": torch.float16,
-        "bfloat16": torch.bfloat16,
-    }
-    if dtype not in mapping:
-        raise ValueError(f"Unsupported dtype: {dtype}")
-    return mapping[dtype]
-
-
-def _pipeline_model_dir(pipeline_name: str) -> str:
-    if pipeline_name == "wan2.1-vace-1.3b":
-        return "Wan-AI/Wan2.1-VACE-1.3B"
-    if pipeline_name == "wan2.1-vace-14b":
-        return "Wan-AI/Wan2.1-VACE-14B"
-    raise ValueError(f"Unsupported VACE pipeline: {pipeline_name}")
-
-
-def build_pipeline_from_config(config: dict, device: str) -> WanVideoPipeline:
-    pipeline_config = config["pipeline"]
-    pipeline_name = pipeline_config["name"]
-    model_base = pipeline_config.get("path", "/data1/lyf/Lab/DiffSynth-Studio/models")
-    torch_dtype = _parse_dtype(str(pipeline_config.get("dtype", "torch.bfloat16")))
+if __name__ == "__main__":
+    torch_dtype = torch.bfloat16
+    device = "cuda"
+    model_base = "/data1/lyf/Lab/DiffSynth-Studio/models"
     model_configs = [
         ModelConfig(
             path=sorted(glob.glob(os.path.join(
-                model_base, _pipeline_model_dir(pipeline_name), "diffusion_pytorch_model*.safetensors"
+                model_base, "Wan-AI/Wan2.1-VACE-14B/diffusion_pytorch_model*.safetensors"
             ))),
         ),
         ModelConfig(
             path=os.path.join(
-                model_base,
-                "DiffSynth-Studio/Wan-Series-Converted-Safetensors/models_t5_umt5-xxl-enc-bf16.safetensors"
+                model_base, "DiffSynth-Studio/Wan-Series-Converted-Safetensors/models_t5_umt5-xxl-enc-bf16.safetensors"
             ),
         ),
         ModelConfig(
             path=os.path.join(
-                model_base,
-                "DiffSynth-Studio/Wan-Series-Converted-Safetensors/Wan2.1_VAE.safetensors"
+                model_base, "DiffSynth-Studio/Wan-Series-Converted-Safetensors/Wan2.1_VAE.safetensors"
             ),
         ),
     ]
     tokenizer_config = ModelConfig(
         path=os.path.join(model_base, "Wan-AI/Wan2.1-T2V-1.3B/google/umt5-xxl"),
     )
+
     pipeline = WanVideoPipeline.from_pretrained(
         torch_dtype=torch_dtype,
         device=device,
         model_configs=model_configs,
         tokenizer_config=tokenizer_config,
     )
-    if pipeline_name == "wan2.1-vace-14b":
-        pipeline.load_lora(
-            pipeline.dit,
-            "/data1/lyf/Lab/DiffSynth-Studio/lora/wan2.1_t2v_14b_lora_rank64_lightx2v_4step.safetensors",
-            alpha=1,
-        )
-    return pipeline
 
+    pipeline.load_lora(pipeline.dit, "/data1/lyf/Lab/DiffSynth-Studio/lora/wan2.1_t2v_14b_lora_rank64_lightx2v_4step.safetensors", alpha=1)
 
-def resolve_collect_dirpath(config_path: str, config: dict, num_samples: int) -> str:
-    pipeline_config = config["pipeline"]
-    eval_config = config.get("eval", {})
-    quant_config = config.get("quant", {})
-    calib_config = quant_config.get("calib", {})
-    dtype = str(_parse_dtype(str(pipeline_config.get("dtype", "torch.bfloat16"))))
-    calib_path = calib_config.get("path", "datasets/{dtype}/Wan2.1-VACE/s{num_samples}/caches")
-    calib_path = calib_path.format(
-        dtype=dtype,
-        family=pipeline_config["name"].split("-")[0],
-        model=pipeline_config["name"],
-        protocol=eval_config.get("protocol", ""),
-        data=calib_config.get("data", ""),
-        num_samples=num_samples,
+    index_path = "/data1/lyf/video_data/json/real_fix.txt"
+    process_data_root = "/data1/lyf/video_data/process_data"
+    num_samples = 120  
+
+    num_steps = 20               
+    height = 480                 
+    width = 832                  
+    num_frames = 81              
+    cfg_scale = 5.0              
+    negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+    tiled = True                
+    sigma_shift = 5.0            
+
+    output_root = "/data1/lyf/Lab/VACE/deepcompressor_vace/examples/diffusion/datasets"
+    dataset_name = "VACE-benchmark-real"
+    pipeline_name = "Wan2.1-VACE-14B-lora-20steps"
+
+    collect_dirpath = os.path.join(
+        output_root,
+        str(torch_dtype),
+        pipeline_name,
+        dataset_name,
+        f"s{num_samples}",
     )
-    config_dir = os.path.dirname(os.path.abspath(config_path))
-    examples_dir = os.path.abspath(os.path.join(config_dir, "../.."))
-    if not os.path.isabs(calib_path):
-        calib_path = os.path.join(examples_dir, calib_path)
-    if os.path.basename(calib_path) == "caches":
-        return os.path.dirname(calib_path)
-    return calib_path
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Collect Wan VACE calibration caches.")
-    parser.add_argument(
-        "--config",
-        default="/data1/lyf/Lab/VACE/deepcompressor_vace/examples/diffusion/configs/model/wan2.1-vace-14b.yaml",
-        help="Path to a VACE model YAML config.",
-    )
-    parser.add_argument("--device", default="cuda")
-    parser.add_argument("--index-path", default="/data1/lyf/video_data/json/real_fix.txt")
-    parser.add_argument("--process-data-root", default="/data1/lyf/video_data/process_data")
-    parser.add_argument("--num-samples", type=int, default=None)
-    parser.add_argument("--num-steps", type=int, default=None)
-    args = parser.parse_args()
-
-    cfg = _load_yaml_config(args.config)
-    eval_cfg = cfg.get("eval", {})
-    quant_cfg = cfg.get("quant", {})
-    calib_cfg = quant_cfg.get("calib", {})
-    num_samples = args.num_samples if args.num_samples is not None else int(calib_cfg.get("num_samples", 1))
-    num_steps = args.num_steps if args.num_steps is not None else int(eval_cfg.get("num_steps", 20))
-    height = int(eval_cfg.get("height", 480))
-    width = int(eval_cfg.get("width", 832))
-    num_frames = 81
-    cfg_scale = float(eval_cfg.get("guidance_scale", 5.0))
-    tiled = True
-    sigma_shift = 5.0
-
-    pipeline = build_pipeline_from_config(cfg, args.device)
-
-    collect_dirpath = resolve_collect_dirpath(args.config, cfg, num_samples)
-    if f"s{num_samples}" not in collect_dirpath:
-        collect_dirpath = os.path.join(collect_dirpath, f"s{num_samples}")
     print(f"Saving caches to {collect_dirpath}")
 
-    samples = load_dataset(args.index_path, args.process_data_root, max_samples=num_samples)
-    print(f"Loaded {len(samples)} samples from {args.index_path}")
+    samples = load_dataset(index_path, process_data_root, max_samples=num_samples)
+    print(f"Loaded {len(samples)} samples from {index_path}")
 
     base_pipeline_kwargs: dict = {
         "height": height,
@@ -303,7 +217,7 @@ if __name__ == "__main__":
         "num_frames": num_frames,
         "num_inference_steps": num_steps,
         "cfg_scale": cfg_scale,
-        "negative_prompt": DEFAULT_NEGATIVE_PROMPT,
+        "negative_prompt": negative_prompt,
         "tiled": tiled,
         "sigma_shift": sigma_shift,
     }

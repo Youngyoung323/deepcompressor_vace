@@ -20,6 +20,7 @@ Usage (from examples/diffusion/ directory):
       --skip-eval true
 """
 
+import copy
 import glob
 import json
 import os
@@ -33,7 +34,7 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
-from deepcompressor.app.diffusion.nn.wan_struct import WanDiTStruct  # noqa: F401
+from deepcompressor.app.diffusion.nn.wan_struct import VaceWanDiTStruct, WanDiTStruct  # noqa: F401
 from deepcompressor.app.diffusion.pipeline.config import DiffusionPipelineConfig
 from deepcompressor.app.diffusion.config import DiffusionPtqRunConfig
 from deepcompressor.app.diffusion.dataset.calib import DiffusionCalibCacheLoaderConfig
@@ -72,10 +73,18 @@ def _build_wan_vace_pipeline(
     shift_activations: bool,
 ) -> WanVideoPipeline:
     model_base = path
+    if name == "wan2.1-vace-1.3b":
+        model_dir = "Wan-AI/Wan2.1-VACE-1.3B"
+        lora_path = ""
+    elif name == "wan2.1-vace-14b":
+        model_dir = "Wan-AI/Wan2.1-VACE-14B"
+        lora_path = "/data1/lyf/Lab/DiffSynth-Studio/lora/wan2.1_t2v_14b_lora_rank64_lightx2v_4step.safetensors"
+    else:
+        raise ValueError(f"Unsupported Wan VACE pipeline: {name}")
     model_configs = [
         ModelConfig(
             path=sorted(glob.glob(os.path.join(
-                model_base, "Wan-AI/Wan2.1-VACE-14B/diffusion_pytorch_model*.safetensors"
+                model_base, model_dir, "diffusion_pytorch_model*.safetensors"
             ))),
         ),
         ModelConfig(
@@ -102,12 +111,13 @@ def _build_wan_vace_pipeline(
         model_configs=model_configs,
         tokenizer_config=tokenizer_config,
     )
-    pipeline.load_lora(pipeline.dit, "/data1/lyf/Lab/DiffSynth-Studio/lora/wan2.1_t2v_14b_lora_rank64_lightx2v_4step.safetensors", alpha=1)
+    if lora_path:
+        pipeline.load_lora(pipeline.dit, lora_path, alpha=1)
     return pipeline
 
 
 DiffusionPipelineConfig.register_pipeline_factory(
-    "wan2.1-vace-14b", _build_wan_vace_pipeline
+    ("wan2.1-vace-14b", "wan2.1-vace-1.3b"), _build_wan_vace_pipeline
 )
 
 
@@ -122,6 +132,11 @@ def _extended_default_construct(
     from diffsynth.models.wan_video_dit import WanModel
     if isinstance(module, WanModel):
         return WanDiTStruct.construct(
+            module, parent=parent, fname=fname, rname=rname, rkey=rkey, idx=idx, **kwargs
+        )
+    from diffsynth.models.wan_video_vace import VaceWanModel
+    if isinstance(module, VaceWanModel):
+        return VaceWanDiTStruct.construct(
             module, parent=parent, fname=fname, rname=rname, rkey=rkey, idx=idx, **kwargs
         )
     return _orig_default_construct(
@@ -148,6 +163,57 @@ VACE_PIPELINE_DEFAULTS = dict(
     tiled=True,
     sigma_shift=5.0,
 )
+
+
+def _resolve_vace_quant_mode(config: DiffusionPtqRunConfig) -> int:
+    """Resolve VACE quantization mode from env first, then YAML config.
+
+    Modes:
+      0: quantize Wan backbone and VACE branch
+      1: quantize Wan backbone only
+      2: quantize VACE branch only
+    """
+
+    value = os.environ.get("DEEPCOMPRESSOR_VACE_QUANT_MODE")
+    if value is None:
+        value = str(getattr(config, "vace_quant_mode", 0))
+        # Backward compatibility with the older branch-only on/off switch.
+        legacy_branch = os.environ.get("DEEPCOMPRESSOR_QUANT_VACE_BRANCH")
+        if legacy_branch is not None and value == "0":
+            if legacy_branch.lower() in ("0", "false", "no", "off"):
+                value = "1"
+    try:
+        mode = int(value)
+    except ValueError as exc:
+        raise ValueError(f"Invalid VACE quantization mode: {value!r}") from exc
+    if mode not in (0, 1, 2):
+        raise ValueError("VACE quantization mode must be 0 (all), 1 (backbone), or 2 (branch)")
+    return mode
+
+
+def _build_vace_cache_config(config: DiffusionPtqRunConfig):
+    """Create a stable global cache config for the VACE branch.
+
+    DeepCompressor's normal PTQ cache is keyed by the pipeline/model name.
+    The VACE side branch needs its own files so it does not overwrite the
+    Wan backbone cache, but it should still reuse the same automatic cache
+    discovery mechanism. We keep the same cache directories and add a
+    ``.vace`` suffix to the cache filenames.
+    """
+
+    if config.cache is None or config.cache.path is None:
+        return None
+
+    vace_cache = copy.deepcopy(config.cache)
+
+    def add_vace_suffix(path: str) -> str:
+        if not path:
+            return path
+        stem, ext = os.path.splitext(path)
+        return f"{stem}.vace{ext or '.pt'}"
+
+    vace_cache.path = vace_cache.path.apply(add_vace_suffix)
+    return vace_cache
 
 
 def load_vace_dataset(index_path: str, data_root: str, max_samples: int = -1) -> list[dict]:
@@ -259,8 +325,15 @@ def main_vace(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.
     assert isinstance(pipeline, WanVideoPipeline)
 
     if config.quant.is_enabled():
-        model = DiffusionModelStruct.construct(pipeline)
         tools.logging.Formatter.indent_dec()
+        quant_mode = _resolve_vace_quant_mode(config)
+        quant_backbone = quant_mode in (0, 1)
+        quant_vace_branch = quant_mode in (0, 2)
+        logger.info(
+            "=== VACE quantization mode: %s (%s) ===",
+            quant_mode,
+            {0: "backbone+branch", 1: "backbone-only", 2: "branch-only"}[quant_mode],
+        )
 
         save_dirpath = os.path.join(config.output.running_job_dirpath, "cache")
         if config.save_model:
@@ -274,18 +347,42 @@ def main_vace(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.
         else:
             save_model = False
 
-        logger.info("=== Quantizing WanModel ===")
-        tools.logging.Formatter.indent_inc()
-        model = ptq(
-            model,
-            config.quant,
-            cache=config.cache,
-            load_dirpath=config.load_from,
-            save_dirpath=save_dirpath,
-            copy_on_save=config.copy_on_save,
-            save_model=save_model,
-        )
-        tools.logging.Formatter.indent_dec()
+        if quant_backbone:
+            model = DiffusionModelStruct.construct(pipeline)
+            logger.info("=== Quantizing WanModel ===")
+            tools.logging.Formatter.indent_inc()
+            model = ptq(
+                model,
+                config.quant,
+                cache=config.cache,
+                load_dirpath=config.load_from,
+                save_dirpath=save_dirpath,
+                copy_on_save=config.copy_on_save,
+                save_model=save_model,
+            )
+            tools.logging.Formatter.indent_dec()
+        else:
+            logger.info("=== Skipping WanModel quantization (vace_quant_mode=2) ===")
+
+        if getattr(pipeline, "vace", None) is not None and quant_vace_branch:
+            logger.info("=== Quantizing VaceWanModel ===")
+            tools.logging.Formatter.indent_inc()
+            vace_model = VaceWanDiTStruct.construct(pipeline.vace, dit=pipeline.dit)
+            vace_cache = _build_vace_cache_config(config)
+            vace_save_dirpath = os.path.join(save_dirpath, "vace") if save_dirpath else ""
+            vace_load_dirpath = os.path.join(config.load_from, "vace") if config.load_from else ""
+            ptq(
+                vace_model,
+                config.quant,
+                cache=vace_cache,
+                load_dirpath=vace_load_dirpath,
+                save_dirpath=vace_save_dirpath,
+                copy_on_save=config.copy_on_save,
+                save_model=save_model,
+            )
+            tools.logging.Formatter.indent_dec()
+        elif getattr(pipeline, "vace", None) is not None:
+            logger.info("=== Skipping VaceWanModel quantization (vace_quant_mode=1) ===")
     else:
         tools.logging.Formatter.indent_dec()
         logger.info("=== No quantization configured — reference mode ===")

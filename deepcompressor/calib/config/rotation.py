@@ -50,7 +50,8 @@ class QuantRotationConfig:
         """
         name = self.name
         if self.transforms:
-            name += f".[{'+'.join(self.transforms)}]"
+            abbrevs = sorted(set("".join(s[0] for s in t.split("_")) for t in self.transforms))
+            name += f".[{'+'.join(abbrevs)}]"
         return [f"{prefix}.{name}" if prefix else name]
 
     @classmethod

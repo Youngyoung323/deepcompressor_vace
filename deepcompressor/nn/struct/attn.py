@@ -381,11 +381,19 @@ class AttentionStruct(BaseModuleStruct):
         return kwargs
 
     def named_key_modules(self) -> tp.Generator[tp.Tuple[str, str, nn.Module, BaseModuleStruct, str], None, None]:
-        yield self.qkv_proj_key, self.q_proj_name, self.q_proj, self, "q_proj"
-        if self.k_proj is not None:
-            yield self.qkv_proj_key, self.k_proj_name, self.k_proj, self, "k_proj"
-        if self.v_proj is not None:
-            yield self.qkv_proj_key, self.v_proj_name, self.v_proj, self, "v_proj"
+        # Keep q/k/v as separate module keys for self-attention.  The old
+        # implementation emitted qkv_proj_key for all three modules, which
+        # made it impossible to skip or quantize them independently.
+        if self.is_self_attn():
+            yield self.q_key, self.q_proj_name, self.q_proj, self, "q_proj"
+            yield self.k_key, self.k_proj_name, self.k_proj, self, "k_proj"
+            yield self.v_key, self.v_proj_name, self.v_proj, self, "v_proj"
+        else:
+            yield self.qkv_proj_key, self.q_proj_name, self.q_proj, self, "q_proj"
+            if self.k_proj is not None:
+                yield self.qkv_proj_key, self.k_proj_name, self.k_proj, self, "k_proj"
+            if self.v_proj is not None:
+                yield self.qkv_proj_key, self.v_proj_name, self.v_proj, self, "v_proj"
         if self.add_q_proj is not None:
             yield self.add_qkv_proj_key, self.add_q_proj_name, self.add_q_proj, self, "add_q_proj"
         if self.add_k_proj is not None:
@@ -402,7 +410,15 @@ class AttentionStruct(BaseModuleStruct):
     @classmethod
     def get_default_keys(cls) -> list[str]:
         """Get the default keys."""
-        return [cls.qkv_proj_rkey, cls.add_qkv_proj_rkey, cls.out_proj_rkey, cls.add_out_proj_rkey]
+        return [
+            cls.qkv_proj_rkey,
+            cls.q_rkey,
+            cls.k_rkey,
+            cls.v_rkey,
+            cls.add_qkv_proj_rkey,
+            cls.out_proj_rkey,
+            cls.add_out_proj_rkey,
+        ]
 
 
 @dataclass(kw_only=True)
@@ -429,7 +445,7 @@ class SelfAttentionStruct(AttentionStruct):
     @classmethod
     def get_default_keys(cls) -> list[str]:
         """Get the default keys."""
-        return [cls.qkv_proj_rkey, cls.out_proj_rkey]
+        return [cls.qkv_proj_rkey, cls.q_rkey, cls.k_rkey, cls.v_rkey, cls.out_proj_rkey]
 
 
 @dataclass(kw_only=True)

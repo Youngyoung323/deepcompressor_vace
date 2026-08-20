@@ -29,6 +29,7 @@ from collections import OrderedDict
 import torch
 import torch.nn as nn
 import torch.utils.data
+from einops import rearrange
 
 from deepcompressor.data.cache import (
     IOTensorsCache,
@@ -41,19 +42,84 @@ from deepcompressor.dataset.action import CacheAction, ConcatCacheAction
 from deepcompressor.dataset.cache import BaseCalibCacheLoader
 from deepcompressor.utils.common import tree_copy_with_ref, tree_map
 
-from ..nn.wan_struct import WanDiTStruct, WanTransformerBlockStruct
+from ..nn.wan_struct import VaceWanDiTStruct, VaceWanTransformerBlockStruct, WanDiTStruct, WanTransformerBlockStruct
 
 __all__ = ["WanCalibDataset", "WanCalibCacheLoader", "WanConcatCacheAction"]
 
 try:
     from diffsynth.models.wan_video_dit import CrossAttention as _WanCrossAttention
     from diffsynth.models.wan_video_dit import SelfAttention as _WanSelfAttention
+    from diffsynth.models.wan_video_dit import sinusoidal_embedding_1d as _wan_sinusoidal_embedding_1d
 except ImportError:  # optional; ptq_vace adds DiffSynth to sys.path
 
     class _WanAttentionPlaceholder(nn.Module):
         pass
 
     _WanSelfAttention = _WanCrossAttention = _WanAttentionPlaceholder
+    _wan_sinusoidal_embedding_1d = None
+
+
+class _VaceWanReplayModel(nn.Module):
+    """Replay VACE side branch from model_fn-style calibration caches."""
+
+    def __init__(self, vace: nn.Module, dit: nn.Module) -> None:
+        super().__init__()
+        object.__setattr__(self, "_dit", dit)
+        self.vace_patch_embedding = vace.vace_patch_embedding
+        self.vace_blocks = vace.vace_blocks
+
+    def forward(
+        self,
+        latents: torch.Tensor,
+        timestep: torch.Tensor,
+        context: torch.Tensor,
+        vace_context: torch.Tensor | None = None,
+        clip_feature: torch.Tensor | None = None,
+        y: torch.Tensor | None = None,
+        vace_scale: float = 1.0,
+        **kwargs,
+    ):
+        if vace_context is None:
+            raise ValueError("VACE calibration cache is missing `vace_context`.")
+        if _wan_sinusoidal_embedding_1d is None:
+            raise ImportError("DiffSynth Wan utilities are required for VACE replay.")
+
+        dit = self.__dict__["_dit"]
+        t = dit.time_embedding(_wan_sinusoidal_embedding_1d(dit.freq_dim, timestep))
+        t_mod = dit.time_projection(t).unflatten(1, (6, dit.dim))
+        context = dit.text_embedding(context)
+
+        x = latents
+        if x.shape[0] != context.shape[0]:
+            x = torch.concat([x] * context.shape[0], dim=0)
+        if y is not None and dit.require_vae_embedding:
+            x = torch.cat([x, y], dim=1)
+        if clip_feature is not None and dit.require_clip_embedding:
+            clip_embedding = dit.img_emb(clip_feature)
+            context = torch.cat([clip_embedding, context], dim=1)
+
+        patchified = dit.patchify(x)
+        if isinstance(patchified, tuple):
+            x, (f, h, w) = patchified
+        else:
+            x = patchified
+            f, h, w = x.shape[2:]
+        x = rearrange(x, "b c f h w -> b (f h w) c").contiguous()
+        freqs = torch.cat([
+            dit.freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
+            dit.freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
+            dit.freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1),
+        ], dim=-1).reshape(f * h * w, 1, -1).to(x.device)
+
+        c = [self.vace_patch_embedding(u.unsqueeze(0)) for u in vace_context]
+        c = [u.flatten(2).transpose(1, 2) for u in c]
+        c = torch.cat([
+            torch.cat([u, u.new_zeros(1, x.shape[1] - u.size(1), u.size(2))], dim=1)
+            for u in c
+        ])
+        for block in self.vace_blocks:
+            c = block(c, x, context, t_mod, freqs)
+        return torch.unbind(c)[:-1]
 
 
 class WanConcatCacheAction(ConcatCacheAction):
@@ -291,7 +357,7 @@ class WanCalibCacheLoader(BaseCalibCacheLoader):
 
     def iter_layer_activations(
         self,
-        model: nn.Module | WanDiTStruct,
+        model: nn.Module | WanDiTStruct | VaceWanDiTStruct,
         *args,
         needs_inputs_fn: tp.Callable[[str, nn.Module], bool],
         needs_outputs_fn: tp.Callable[[str, nn.Module], bool] | None = None,
@@ -304,12 +370,17 @@ class WanCalibCacheLoader(BaseCalibCacheLoader):
         None,
         None,
     ]:
-        if not isinstance(model, WanDiTStruct):
+        if isinstance(model, VaceWanDiTStruct):
+            model_struct = model
+            if model_struct.dit is None:
+                raise ValueError("VaceWanDiTStruct requires `dit` for calibration replay.")
+            model = _VaceWanReplayModel(model_struct.module, model_struct.dit)
+        elif not isinstance(model, WanDiTStruct):
             model_struct = WanDiTStruct.construct(model)
         else:
             model_struct = model
             model = model_struct.module
-        assert isinstance(model_struct, WanDiTStruct)
+        assert isinstance(model_struct, (WanDiTStruct, VaceWanDiTStruct))
         assert isinstance(model, nn.Module)
 
         action = WanConcatCacheAction("cpu") if action is None else action
@@ -336,7 +407,7 @@ class WanCalibCacheLoader(BaseCalibCacheLoader):
             layer_kwargs.pop("hidden_states", None)
             layer_struct = layer_structs[layer_idx]
 
-            if isinstance(layer_struct, WanTransformerBlockStruct):
+            if isinstance(layer_struct, (WanTransformerBlockStruct, VaceWanTransformerBlockStruct)):
                 assert layer_struct.name == layer_name
                 assert layer is layer_struct.module
                 for attn_struct in layer_struct.iter_attention_structs():

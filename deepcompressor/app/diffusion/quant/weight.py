@@ -54,10 +54,10 @@ def calibrate_diffusion_block_low_rank_branch(  # noqa: C901
             if field_name.endswith(("q_proj", "k_proj", "v_proj")):
                 assert isinstance(parent, DiffusionAttentionStruct)
                 if parent.is_self_attn():
-                    if field_name == "q_proj":
-                        modules, module_names = parent.qkv_proj, parent.qkv_proj_names
-                    else:
-                        continue
+                    # Self-attention q/k/v use independent keys and are
+                    # calibrated independently.  The old implementation
+                    # grouped them under qkv_proj.
+                    pass
                 elif parent.is_cross_attn():
                     if field_name == "add_k_proj":
                         modules.append(parent.add_v_proj)

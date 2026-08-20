@@ -107,7 +107,8 @@ class ModelFnCollectHook:
         pipeline.model_fn = hook
     """
 
-    KWARGS_TENSOR_KEYS = ("timestep", "context", "clip_feature", "y")
+    KWARGS_TENSOR_KEYS = ("timestep", "context", "clip_feature", "y", "vace_context")
+    KWARGS_VALUE_KEYS = ("vace_scale",)
 
     def __init__(
         self,
@@ -129,6 +130,10 @@ class ModelFnCollectHook:
         for key in self.KWARGS_TENSOR_KEYS:
             val = kwargs.get(key)
             if val is not None and isinstance(val, torch.Tensor):
+                input_kwargs[key] = val
+        for key in self.KWARGS_VALUE_KEYS:
+            val = kwargs.get(key)
+            if val is not None:
                 input_kwargs[key] = val
 
         cache = tree_map(

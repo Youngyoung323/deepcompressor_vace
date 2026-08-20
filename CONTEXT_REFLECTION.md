@@ -853,3 +853,207 @@ Grid search 计算量（每个投影层）：
 | Low-rank | 未开始，预估 >100h | ~50h (与样本数弱相关) |
 | Weight calib | ~数小时 | ~数小时 |
 | **总计** | ~230h+ | ~65h |
+
+---
+
+## 二十二、用 Rotation 替代 Smooth 的方案分析
+
+### 22.1 动机
+
+通过分析脚本 `scripts/analyze_activation_by_timestep.py` 验证了 Hadamard rotation 对 Wan2.1 模型的效果：
+- rotation 前：`max(abs_max)` 跨通道 ~16，存在明显的 outlier channel（heatmap 竖条纹）
+- rotation 后：`max(abs_max)` 降至 ~6.5，通道分布大幅均匀化
+
+Smooth 的核心问题：**计算量巨大**（Wan2.1-14B 约 128 小时），因为它需要对每个投影层做 grid search 搜索最优 per-channel scale。而 Hadamard rotation 是确定性的正交变换，**不需要搜索**，只需一次性应用即可。
+
+### 22.2 Smooth vs Rotation 的数学对比
+
+| | Smooth | Rotation (Hadamard) |
+|---|---|---|
+| 数学变换 | `Y = (X / s) · (s · W)` | `Y = (X @ Q) · (W @ Q)^T = X · W^T` |
+| 参数 | per-channel scale `s`（需搜索） | 正交矩阵 Q（确定性，由维度决定） |
+| 校准数据 | 需要大量校准数据做 grid search | **不需要校准数据** |
+| 计算开销 | 极高（~128h for 14B） | **几乎为零**（一次矩阵乘法） |
+| 效果 | 最优 per-channel 缩放 | 正交打散 outlier 到所有通道 |
+| 实现 | `ActivationSmoother` hook（运行时 x/s） | `HadamardTransformHook` hook（运行时 x@Q） |
+| 存储 | 需保存 `smooth.pt`（scale 缓存） | 不需要额外存储（Q 由维度确定） |
+
+### 22.3 当前框架中 Rotation 和 Smooth 的覆盖范围对比
+
+#### PTQ 主流程中的执行顺序 (`ptq.py`)
+
+```python
+if config.enabled_rotation:      # ① 先执行 rotation（权重变换 + 注册 pre-hook）
+    rotate_diffusion(model, config)
+if config.enabled_smooth:         # ② 再执行 smooth（搜索 scale + 权重变换 + 注册 hook）
+    smooth_diffusion(model, config)
+# ③ 后续: quantize_weights, quantize_activations
+```
+
+两者独立控制、互不依赖。可以只启用 rotation 不启用 smooth。
+
+#### 各投影层的处理方式对比
+
+| 投影层组 | Smooth 操作 | 现有 Rotation 操作 | 差异分析 |
+|---|---|---|---|
+| **self_attn QKV** | per-channel scale，可融合到前置 LayerNorm | `hadamard_in_channels`：Hadamard 变换输入通道 + pre-hook | ✅ 等价覆盖 |
+| **cross_attn Q** | per-channel scale | `hadamard_in_channels`：同上 | ✅ 等价覆盖 |
+| **cross_attn KV (context)** | per-channel scale | `hadamard_in_channels`（通过 `add_qkv_proj_key`） | ✅ 等价覆盖 |
+| **self_attn/cross_attn O (out_proj)** | per-channel scale（可融合到 V 输出通道） | **V→O 逐头旋转矩阵**（非 Hadamard），不注册 pre-hook | ⚠️ 机制不同 |
+| **FFN up_proj** | per-channel scale，可融合到前置 LayerNorm | `hadamard_in_channels` | ✅ 等价覆盖 |
+| **FFN down_proj** | per-channel scale | `hadamard_in_channels` | ✅ 等价覆盖 |
+
+#### 关键差异：out_proj 的处理
+
+现有 `rotate_diffusion` 对 `out_proj` 的处理方式与其他投影层**不同**：
+
+```python
+# 其他投影层：全维度 Hadamard
+hadamard_in_channels(attn.qkv_proj, ...)  # Hadamard(dim) + pre-hook
+
+# out_proj：逐头旋转矩阵（head_dim 维度）
+rotate_out_channels(attn.v_proj.weight, rotation=head_rotation)  # R: (head_dim, head_dim)
+rotate_in_channels(attn.o_proj.weight, rotation=head_rotation)   # 无 pre-hook
+```
+
+**区别**：
+- 全维度 Hadamard：Q 是 `(dim, dim)` 正交矩阵，打散跨头的 outlier
+- 逐头旋转：R 是 `(head_dim, head_dim)` 正交矩阵，仅在每个 head 内部打散
+
+**分析脚本中的做法**：对 **所有** Linear（包括 o_proj）都做全维度 Hadamard。这更彻底，但与现有 V→O 逐头旋转**不能组合**（因为组合后不再是恒等变换）。
+
+### 22.4 关键配置 key_map
+
+Wan 模型的 transform key 映射：
+
+| YAML key | 实际 key | 对应操作 |
+|---|---|---|
+| `attn_qkv_proj` | `attn_qkv_proj` | self_attn: Hadamard on [q,k,v]; cross_attn: Hadamard on [q] |
+| `attn_add_qkv_proj` | `attn_add_qkv_proj` | cross_attn: Hadamard on [k,v] (context) |
+| `attn_out_proj` | `attn_out_proj` | V→O 逐头旋转（V output + O input） |
+| `ffn_up_proj` | `ffn_up_proj` | Hadamard on [ffn.0] input |
+| `ffn_down_proj` | `ffn_down_proj` | Hadamard on [ffn.2] input |
+
+快捷 key：
+- `attn` → 展开为 `attn_qkv_proj` + `attn_out_proj`
+- `ffn` → 展开为 `ffn_up_proj` + `ffn_down_proj`
+- `attn_add` → 展开为 `attn_add_qkv_proj` + `attn_add_out_proj`
+
+### 22.5 Nunchaku 后端的影响
+
+Nunchaku 转换代码（`backend/nunchaku/convert.py`）中，smooth scale 被嵌入到量化权重中：
+```python
+state_dict["smooth_orig"] = smooth      # 原始 smooth scale
+state_dict["smooth"] = smooth.clone()   # 运行时使用的 smooth scale
+```
+
+禁用 smooth 时 `smooth=None`，Nunchaku 转换需要确保兼容。但这是**后续部署阶段**的问题，PTQ 评估阶段不受影响。
+
+Rotation 的在线部分（`HadamardTransformHook` pre-hook）在 PyTorch 推理时正常工作，但 Nunchaku 后端可能需要额外的 Hadamard kernel 支持。这也是部署阶段再考虑的问题。
+
+### 22.6 与 AdaLN-Zero 调制机制的兼容性
+
+Wan 模型的 DiTBlock 使用 AdaLN-Zero 调制：
+```python
+input_x = modulate(self.norm1(x), shift_msa, scale_msa)  # → 输入到 self_attn
+```
+
+Hadamard pre-hook 在 `nn.Linear` 层面注册，作用在已经过 norm + modulate 的激活上：
+```
+x → norm1 → modulate(shift, scale) → [Hadamard pre-hook] → q/k/v Linear → ...
+```
+
+这是正确的：Hadamard 在 modulate 之后、Linear 之前执行，对量化有效的激活分布进行旋转。
+
+---
+
+## 二十三、Rotation 替代 Smooth 的 TODO List
+
+### Phase 1：最小化修改（仅配置，不改代码）
+
+> 目标：用现有 rotation 框架（`hadamard_in_channels` + V→O 逐头旋转）全面替代 smooth
+
+- [ ] **TODO-1: 创建 rotation-only 配置文件**
+  - 新建 `examples/diffusion/configs/quant_rotation_only.yaml`
+  - 内容：`enable_smooth: false`，`enable_rotation: true`
+  - transforms 列表包含所有投影层：
+    ```yaml
+    quant:
+      enable_smooth: false
+      enable_rotation: true
+      rotation:
+        random: false
+        transforms:
+          - attn_qkv_proj
+          - attn_out_proj
+          - attn_add_qkv_proj
+          - ffn_up_proj
+          - ffn_down_proj
+    ```
+
+- [ ] **TODO-2: 验证 rotation 配置的正确性**
+  - 用 1.3B 模型做小规模测试（少量 sample），确认：
+    - rotation 阶段正常完成（所有层都被旋转）
+    - smooth 阶段被跳过
+    - 权重量化和激活量化正常运行
+    - 生成结果可用
+
+### Phase 2：增强 out_proj 的 Rotation 覆盖
+
+> 目标：为 out_proj 增加全维度 Hadamard 选项，与分析脚本的效果对齐
+
+- [ ] **TODO-3: 在 `rotate_diffusion` 中为 out_proj 增加 Hadamard 模式**
+  - 修改 `deepcompressor/app/diffusion/quant/rotate.py`
+  - 新增 transform key `attn_out_proj_hadamard`（或复用 `attn_out_proj` + config flag）
+  - 当启用该 key 时：
+    - 不做 V→O 逐头旋转
+    - 改为 `hadamard_in_channels([o_proj])` + `hadamard_in_channels([add_o_proj])`
+  - 需要确保不与 V→O 逐头旋转同时启用（两者不可组合）
+
+- [ ] **TODO-4: 在 `QuantRotationConfig` 中添加配置支持**
+  - 修改 `deepcompressor/calib/config/rotation.py`
+  - 增加 `hadamard_out_proj: bool = False` 选项
+  - 或者通过 transform key 名称来区分行为
+
+- [ ] **TODO-5: 更新 YAML 配置文件**
+  - 更新 `quant_rotation_only.yaml`，使用新的 out_proj Hadamard 配置
+
+### Phase 3：对比评估
+
+- [ ] **TODO-6: 运行 baseline（smooth only）**
+  - 使用现有 SVDQuant 配置（`configs/svdquant/__default__.yaml`）
+  - 记录生成质量指标
+
+- [ ] **TODO-7: 运行 rotation only（Phase 1 配置）**
+  - 使用 `quant_rotation_only.yaml` + 标准 SVDQuant 配置
+  - 对比 smooth baseline
+
+- [ ] **TODO-8: 运行 enhanced rotation（Phase 2 配置，如已实现）**
+  - 使用 out_proj Hadamard 增强版
+  - 对比前两者
+
+### Phase 4：Nunchaku 后端适配（可选，低优先级）
+
+- [ ] **TODO-9: 确保 Nunchaku 转换兼容 rotation-only 模式**
+  - 修改 `backend/nunchaku/convert.py` 中的 smooth 处理
+  - 当 `smooth=None` 时使用单位 scale（`torch.ones`）
+  - 或者增加 Hadamard transform 的存储字段
+
+### 文件修改清单
+
+| 优先级 | 文件 | 改动 |
+|---|---|---|
+| P0 | `examples/diffusion/configs/quant_rotation_only.yaml` | **新建**：rotation-only 配置 |
+| P1 | `deepcompressor/app/diffusion/quant/rotate.py` | **修改**：为 out_proj 添加 Hadamard 模式 |
+| P1 | `deepcompressor/calib/config/rotation.py` | **修改**：添加 hadamard_out_proj 配置 |
+| P2 | `examples/diffusion/configs/model/wan2.1-t2v-1.3b.yaml` | **修改**：取消 rotation 注释 / 新增 rotation 配置 |
+| P3 | `deepcompressor/backend/nunchaku/convert.py` | **修改**：兼容 smooth=None |
+
+### 风险评估
+
+| 风险 | 影响 | 缓解 |
+|---|---|---|
+| V→O 逐头旋转不够好，out_proj 仍有 outlier | 量化精度下降 | Phase 2 增加全维度 Hadamard |
+| cross_attn context 的 Hadamard 不适配 | context 维度与 hidden 不同时可能有问题 | Wan 中两者相同 (dim=1536/5120)，无风险 |
+| Nunchaku 后端不支持 Hadamard pre-hook | 无法部署到 Nunchaku | PTQ 评估不受影响；部署阶段再处理 |
+| Rotation + SVDQuant 低秩分支的交互 | 低秩补偿 `A·B` 未经 rotation | 低秩分支补偿的是量化误差，与 rotation 独立 |

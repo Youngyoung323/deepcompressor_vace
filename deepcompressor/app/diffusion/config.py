@@ -57,6 +57,9 @@ class DiffusionPtqRunConfig:
             Directory path to save the model checkpoint.
         copy_on_save (`bool`, *optional*, defaults to `False`):
             Whether to copy the quantization cache on save.
+        vace_quant_mode (`int`, *optional*, defaults to `0`):
+            VACE quantization mode. 0 quantizes both Wan backbone and VACE branch,
+            1 quantizes only Wan backbone, and 2 quantizes only VACE branch.
     """
 
     cache: DiffusionPtqCacheConfig | None
@@ -72,6 +75,7 @@ class DiffusionPtqRunConfig:
     load_from: str = ""
     save_model: str = ""
     copy_on_save: bool = False
+    vace_quant_mode: int = 0
 
     def __post_init__(self):
         # region set text encoder quanatization scale default dtype

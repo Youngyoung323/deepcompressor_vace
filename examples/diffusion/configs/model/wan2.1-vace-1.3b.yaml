@@ -1,24 +1,26 @@
 pipeline:
-  name: wan2.1-t2v-1.3b
+  name: wan2.1-vace-1.3b
   dtype: torch.bfloat16
   path: /data1/lyf/Lab/DiffSynth-Studio/models
+# 0: quantize Wan backbone + VACE branch, 1: backbone only, 2: VACE branch only
+vace_quant_mode: 2
 eval:
-  num_steps: 40
+  num_steps: 20
   guidance_scale: 5.0
   protocol: fmeuler{num_steps}-g{guidance_scale}
   height: 480
   width: 832
-  num_samples: 10
+  num_samples: -1
   benchmarks: []
   num_gpus: 1
   batch_size_per_gpu: 1
 quant:
   calib:
-    data: Ditto-1M
-    path: datasets/torch.bfloat16/ViDiT-Q-Wan2.1-1.3B/caches
+    data: vace-benchmark
+    path: datasets/{dtype}/Wan2.1-VACE-1.3B-20steps/VACE-benchmark-real/s120/caches
     batch_size: 1
     num_workers: 1
-    num_samples: 80
+    num_samples: 120
   wgts:
     calib_range:
       element_batch_size: 64
@@ -34,13 +36,8 @@ quant:
     - transformer_add_norm
     - attn_add
     - ffn_add
-    - self_attn_q
-    - self_attn_k
-    - self_attn_out_proj
-    - cross_attn_qkv_proj
-    - cross_attn_out_proj
-    - ffn_up_proj
-    - ffn_down_proj
+    # VACE side branch: skip Conv3d embedding; quantize before_proj/after_proj by default.
+    - vace_input_embed
   ipts:
     calib_range:
       element_batch_size: 64
@@ -53,25 +50,14 @@ quant:
     - transformer_add_norm
     - attn_add
     - ffn_add
-    - self_attn_q
-    - self_attn_k
-    - self_attn_out_proj
-    - cross_attn_qkv_proj
-    - cross_attn_out_proj
-    - ffn_up_proj
-    - ffn_down_proj
+    # VACE side branch: skip Conv3d embedding; quantize before_proj/after_proj by default.
+    - vace_input_embed
   opts:
     calib_range:
       element_batch_size: 64
       sample_batch_size: 1
       element_size: 512
       sample_size: -1
-#  enable_rotation: true
-#  rotation:
-#    random: false
-#    transforms:
-#      - attn_out_proj
-#      - ffn_down_proj
   smooth:
     proj:
       element_batch_size: -1

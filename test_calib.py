@@ -19,8 +19,7 @@ from typing import Any
 import torch
 
 DEFAULT_PT = (
-    "/data1/lyf/Lab/VACE/deepcompressor_vace/examples/diffusion/datasets/"
-    "torch.bfloat16/Wan2.1-T2V-1.3B-50steps/Ditto-1M/s128/caches/000001-00000-0.pt"
+    "/data1/lyf/Lab/VACE/deepcompressor_vace/examples/diffusion/datasets/torch.bfloat16/Wan2.1-VACE-14B-lora-20steps/VACE-benchmark-real/s1/caches/000010-00000-0.pt"
 )
 
 
@@ -104,8 +103,6 @@ def main() -> None:
         sys.exit(1)
 
     describe(payload, "payload")
-    print()
-    print("（与 calib_wan_loader 文档对照: 期望顶层含 input_args, input_kwargs, outputs, sample_id, step, guidance）")
 
 
 if __name__ == "__main__":

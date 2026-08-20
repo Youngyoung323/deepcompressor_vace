@@ -50,6 +50,11 @@ def get_needs_inputs_fn(
                 if field_name.endswith("o_proj"):
                     needs_inputs_names.add(module_name)
                 elif field_name in ("q_proj", "k_proj", "v_proj"):
+                    # q/k/v are independently keyed for self-attention.
+                    # Cache each projection input explicitly; previously
+                    # only q_proj_name was cached because all three shared
+                    # one qkv quantizer.
+                    needs_inputs_names.add(module_name)
                     needs_inputs_names.add(parent.q_proj_name)
                     if parent.parent.parallel and parent.idx == 0:
                         needs_inputs_names.add(parent.parent.name)

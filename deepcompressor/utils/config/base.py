@@ -57,7 +57,19 @@ class SkipBasedConfig(KeyEnableConfig, EnableConfig):
             `bool`:
                 Whether the configuration is enabled for the given key.
         """
-        return self.is_enabled() and key not in self.skips
+        if not self.is_enabled():
+            return False
+        if key in self.skips:
+            return False
+        # Backward compatibility: before self-attention projections were
+        # split, q/k/v all used the `<attn>_qkv_proj` key.  A legacy skip for
+        # that group must therefore still disable each new individual key.
+        projection = key.rsplit("_", 1)[-1]
+        if projection in ("q", "k", "v"):
+            qkv_key = f"{key.rsplit('_', 1)[0]}_qkv_proj"
+            if qkv_key in self.skips:
+                return False
+        return True
 
     def generate_dirnames(self, *, prefix: str = "", **kwargs) -> list[str]:
         """Generate the directory names of the configuration.

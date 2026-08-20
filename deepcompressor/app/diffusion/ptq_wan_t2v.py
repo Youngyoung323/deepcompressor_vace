@@ -6,14 +6,15 @@ Registers WanVideo pipeline factories and ``WanDiTStruct``, then delegates to
 
 Usage (from examples/diffusion/ directory):
 
-  # Wan2.1-T2V-1.3B — reference / PTQ
+  # Wan2.1-T2V-1.3B — baseline reference generation (1024 videos, FP, no quant)
   python -m deepcompressor.app.diffusion.ptq_wan_t2v \\
       configs/model/wan2.1-t2v-1.3b.yaml \\
-      --output-dirname reference --skip-eval true
+      --output-dirname reference
 
+  # Wan2.1-T2V-1.3B — PTQ (skip generation)
   python -m deepcompressor.app.diffusion.ptq_wan_t2v \\
       configs/model/wan2.1-t2v-1.3b.yaml configs/svdquant/nvfp4.yaml \\
-      --skip-eval true
+      --skip-gen true
 
   # Wan2.1-T2V-14B — use ``configs/model/wan2.1-t2v-14b.yaml`` (pipeline.name: wan2.1-t2v-14b)
 """
@@ -199,12 +200,12 @@ DiffusionModelStruct.register_factory(
 # ---------------------------------------------------------------------------
 # T2V evaluation dataset & generation
 # ---------------------------------------------------------------------------
-# 默认使用 0001 分卷 caption（与 0000 目录校准数据错开）。可用环境变量覆盖：
-#   WAN_T2V_CAPTION_JSON=/path/to.json WAN_T2V_VIDEO_ROOT=/path/to/source/source
+# 默认使用 1024 条评估 caption（跳过 sorted 前 50 条，path 为 000001.mp4 形式）。
+# 可用环境变量覆盖：WAN_T2V_CAPTION_JSON=/path/to.json
 T2V_CAPTION_JSON = os.environ.get(
     "WAN_T2V_CAPTION_JSON",
     "/data1/lyf/Lab/Video_dataset/Ditto-1M/source_video_captions/"
-    "source_video_captions_0001.json",
+    "source_video_captions_0001_wan_fmeuler40_g5_1024videos.json",
 )
 T2V_VIDEO_ROOT = os.environ.get(
     "WAN_T2V_VIDEO_ROOT",
@@ -224,61 +225,32 @@ def load_t2v_dataset(
     video_root: str,
     max_samples: int = -1,
 ) -> list[dict]:
-    """
-    available_dirs = set(os.listdir(video_root))
     with open(caption_json_path, "r", encoding="utf-8") as f:
         all_entries = json.load(f)
 
+    available_dirs = set(os.listdir(video_root)) if os.path.isdir(video_root) else set()
     samples = []
-    """
-    _ = (caption_json_path, video_root, max_samples)
-    samples = [
-        {
-            "sample_id": "000001.mp4",
-            "prompt": (
-                "The video showcases an expansive aerial view of a snow-covered urban landscape during "
-                "what appears to be either dawn or dusk, as indicated by the soft, muted light in the "
-                "sky. The scene is dominated by a sprawling cityscape with numerous buildings, many of "
-                "which have flat roofs blanketed in snow. The architecture is predominantly low-rise, "
-                "with some taller structures scattered throughout, suggesting a mix of residential and "
-                "industrial areas.\n\n"
-                "In the foreground, there are clusters of smaller buildings, possibly warehouses or "
-                "workshops, interspersed with open spaces that appear to be parking lots or storage "
-                "areas. The middle ground features a more densely packed urban area with rows of "
-                "similar-looking buildings, likely residential complexes. In the background, a gently "
-                "sloping hill covered in snow rises, adding depth to the scene. The sky is overcast "
-                "with a gradient of colors transitioning from a pale orange near the horizon to a "
-                "grayish-blue higher up, indicating the time of day.\n\n"
-                "The camera maintains a steady, wide-angle perspective throughout the sequence, "
-                "capturing the vastness of the snowy landscape without any noticeable movement such as "
-                "panning or zooming. This stationary viewpoint allows for a comprehensive overview of "
-                "the city's layout and the surrounding natural environment, emphasizing the stark "
-                "contrast between the built structures and the untouched snow-covered terrain. The "
-                "overall atmosphere is serene and cold, underscored by the pervasive whiteness of the "
-                "snow and the subdued lighting."
-            ),
-        }
-    ]
-    """
     for item in all_entries:
         rel_path = item["path"]
-        dir_name = rel_path.split("/")[0]
-        if dir_name not in available_dirs:
-            continue
+        if "/" in rel_path:
+            dir_name = rel_path.split("/")[0]
+            if available_dirs and dir_name not in available_dirs:
+                continue
+            video_full_path = os.path.join(video_root, rel_path)
+            if not os.path.exists(video_full_path):
+                continue
+            file_stem = os.path.splitext(os.path.basename(rel_path))[0]
+            sample_id = f"{dir_name}_{file_stem}"
+        else:
+            sample_id = os.path.splitext(os.path.basename(rel_path))[0]
 
-        video_full_path = os.path.join(video_root, rel_path)
-        if not os.path.exists(video_full_path):
-            continue
-
-        file_stem = os.path.splitext(os.path.basename(rel_path))[0]
-        sample_id = f"{dir_name}_{file_stem}"
         samples.append({
             "sample_id": sample_id,
             "prompt": item["caption"],
         })
         if 0 < max_samples <= len(samples):
             break
-    """  
+
     return samples
 
 

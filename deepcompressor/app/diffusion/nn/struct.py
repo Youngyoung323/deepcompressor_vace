@@ -119,11 +119,11 @@ PIPELINE_CLS = tp.Union[UNET_PIPELINE_CLS, DIT_PIPELINE_CLS]
 @dataclass(kw_only=True)
 class DiffusionModuleStruct(BaseModuleStruct):
     def named_key_modules(self) -> tp.Generator[tuple[str, str, nn.Module, BaseModuleStruct, str], None, None]:
-        if isinstance(self.module, (nn.Linear, nn.Conv2d)):
+        if isinstance(self.module, (nn.Linear, nn.Conv2d, nn.Conv3d)):
             yield self.key, self.name, self.module, self.parent, self.fname
         else:
             for name, module in self.module.named_modules():
-                if name and isinstance(module, (nn.Linear, nn.Conv2d)):
+                if name and isinstance(module, (nn.Linear, nn.Conv2d, nn.Conv3d)):
                     module_name = join_name(self.name, name)
                     field_name = join_name(self.fname, name)
                     yield self.key, module_name, module, self.parent, field_name
@@ -267,6 +267,12 @@ class DiffusionModelStruct(DiffusionBlockStruct):
                 return WanDiTStruct.construct(
                     module, parent=parent, fname=fname, rname=rname, rkey=rkey, idx=idx, **kwargs
                 )
+            from diffsynth.models.wan_video_vace import VaceWanModel
+            if isinstance(module, VaceWanModel):
+                from .wan_struct import VaceWanDiTStruct
+                return VaceWanDiTStruct.construct(
+                    module, parent=parent, fname=fname, rname=rname, rkey=rkey, idx=idx, **kwargs
+                )
         except ImportError:
             pass
         if isinstance(module, UNET_CLS):
@@ -288,9 +294,12 @@ class DiffusionModelStruct(DiffusionBlockStruct):
         for rkey, keys in flux_key_map.items():
             key_map[rkey].update(keys)
         try:
-            from .wan_struct import WanDiTStruct
+            from .wan_struct import VaceWanDiTStruct, WanDiTStruct
             wan_key_map = WanDiTStruct._get_default_key_map()
             for rkey, keys in wan_key_map.items():
+                key_map[rkey].update(keys)
+            vace_key_map = VaceWanDiTStruct._get_default_key_map()
+            for rkey, keys in vace_key_map.items():
                 key_map[rkey].update(keys)
         except ImportError:
             pass
@@ -760,16 +769,24 @@ class DiffusionTransformerBlockStruct(TransformerBlockStruct, DiffusionBlockStru
         attn_cls = cls.attn_struct_cls
         attn_key = attn_rkey = cls.attn_rkey
         qkv_proj_key = qkv_proj_rkey = join_name(attn_key, attn_cls.qkv_proj_rkey, sep="_")
+        q_key = join_name(attn_key, attn_cls.q_rkey, sep="_")
+        k_key = join_name(attn_key, attn_cls.k_rkey, sep="_")
+        v_key = join_name(attn_key, attn_cls.v_rkey, sep="_")
         out_proj_key = out_proj_rkey = join_name(attn_key, attn_cls.out_proj_rkey, sep="_")
         add_qkv_proj_key = add_qkv_proj_rkey = join_name(attn_key, attn_cls.add_qkv_proj_rkey, sep="_")
         add_out_proj_key = add_out_proj_rkey = join_name(attn_key, attn_cls.add_out_proj_rkey, sep="_")
-        key_map[attn_rkey].add(qkv_proj_key)
+        key_map[attn_rkey].update({qkv_proj_key, q_key, k_key, v_key})
         key_map[attn_rkey].add(out_proj_key)
         if attn_cls.add_qkv_proj_rkey.startswith("add_") and attn_cls.add_out_proj_rkey.startswith("add_"):
             add_attn_rkey = join_name(attn_rkey, "add", sep="_")
             key_map[add_attn_rkey].add(add_qkv_proj_key)
             key_map[add_attn_rkey].add(add_out_proj_key)
-        key_map[qkv_proj_rkey].add(qkv_proj_key)
+        # qkv_proj remains a backwards-compatible group alias.  The
+        # individual q/k/v keys are the actual keys emitted by self-attention.
+        key_map[qkv_proj_rkey].update({qkv_proj_key, q_key, k_key, v_key})
+        key_map[attn_cls.q_rkey].add(q_key)
+        key_map[attn_cls.k_rkey].add(k_key)
+        key_map[attn_cls.v_rkey].add(v_key)
         key_map[out_proj_rkey].add(out_proj_key)
         key_map[add_qkv_proj_rkey].add(add_qkv_proj_key)
         key_map[add_out_proj_rkey].add(add_out_proj_key)
